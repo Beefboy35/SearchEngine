@@ -3,7 +3,6 @@ package engine
 import (
 	"errors"
 	"math"
-	"strings"
 
 	"github.com/username/myproject/pkg/fuzzy"
 	"github.com/username/myproject/pkg/text"
@@ -63,18 +62,32 @@ func TermFrequency(target string, doc ProcessedDoc) int {
 	return count
 }
 
-func AvrDocLength(docs []string) float64 {
+func DocumentFrequency(term string, docs []ProcessedDoc) int {
+	var count int
+	for _, doc := range docs {
+		for _, token := range doc.Tokens {
+			if token == term {
+				count++
+				break
+			}
+		}
+
+	}
+	return count
+}
+
+func AvrDocLength(docs []ProcessedDoc) float64 {
 	if len(docs) == 0 {
 		return 0.0
 	}
 	var words float64
 	for _, doc := range docs {
-		words += float64(len(strings.Fields(doc)))
+		words += float64(len(doc.Tokens))
 	}
 
 	return float64(words) / float64(len(docs))
 }
-func normalizeDocLen(docLen, coef float64, docs []string) float64 {
+func normalizeDocLen(docLen, coef float64, docs []ProcessedDoc) float64 {
 	return 1 - coef + coef*(docLen/AvrDocLength(docs))
 }
 
@@ -99,9 +112,9 @@ func CalculateSecondMonomial(tf int, docLen int, params BM25Params) float64 {
 // Или более распространенный вариант сглаживания:
 // IDF(q_i) = log( (N - n(q_i) + 0.5) / (n(q_i) + 0.5) ) + 1 (но это зависит от реализации)
 // Ниже приведена самая стабильная версия, используемая в современных поисковиках:
-func CalculateIDF(n_qi int, totalDocs int) float64 {
-	N := float64(totalDocs)
-	n := float64(n_qi)
+func CalculateIDF(term string, docs []ProcessedDoc) float64 {
+	N := float64(len(docs))
+	n := float64(DocumentFrequency(term, docs))
 
 	// Добавляем 0.5 (сглаживание), чтобы избежать деления на 0
 	// и чтобы значение не уходило в минус, если слово есть во всех документах.
@@ -113,8 +126,32 @@ func CalculateIDF(n_qi int, totalDocs int) float64 {
 	return idf
 }
 
-func BM25Score(tf int, docLen int, params BM25Params) float64 {
-	secondMonomial := CalculateSecondMonomial(tf, docLen, params)
-	idf := CalculateIDF(tf, params.TotalDocs)
-	return idf * secondMonomial
+func BM25Score(query []string, doc ProcessedDoc, docs []ProcessedDoc, params BM25Params) float64 {
+	if len(docs) == 0 || params.K1 <= 0 ||
+		params.B < 0 || params.B > 1 ||
+		params.AvgDocLength <= 0 {
+		return 0
+	}
+	N := float64(len(docs))
+	docLen := float64(len(doc.Tokens))
+	normalization := 1 - params.B +
+		params.B*(docLen/params.AvgDocLength)
+	score := 0.0
+	seen := make(map[string]bool)
+	for _, term := range query {
+		if seen[term] {
+			continue
+		}
+		seen[term] = true
+		tf := TermFrequency(term, doc)
+		if tf == 0 {
+			continue
+		}
+		df := float64(DocumentFrequency(term, docs))
+		idf := math.Log((N-df+0.5)/(df+0.5) + 1.0)
+		numerator := float64(tf) * (params.K1 + 1.0)
+		denominator := float64(tf) + params.K1*normalization
+		score += idf * (numerator / denominator)
+	}
+	return score
 }
